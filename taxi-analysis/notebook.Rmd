@@ -1,0 +1,196 @@
+---
+title: "Trabalho R"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Setup
+### Bibliotecas
+```{r}
+usePackage <- function(p) {
+    if (!is.element(p, installed.packages()[,1]))
+        install.packages(p, dep = TRUE)
+    require(p, character.only = TRUE)
+}
+
+usePackage('dplyr')
+usePackage('ggplot2')
+usePackage('ggmap')
+usePackage('png')
+```
+
+### Constantes e helpers
+```{r}
+earth.perimeter.km = 2 * pi * 6371
+
+lat.min = 40.48
+lat.max = 40.93
+
+lon.min = -74.28
+lon.max = -73.65
+
+#discrete.distance.km = 0.02
+#discrete.distance.deg = discrete.distance.km * (360 / earth.perimeter.km)
+
+discrete.distance.deg = 0.0002
+cell.total.lon = ceiling((lon.max - lon.min) / discrete.distance.deg)
+
+posToCell2 = function(value, lat = TRUE) {
+  if (lat == TRUE) {
+    return (ceiling((value - lat.min) / discrete.distance.deg))
+  }
+  
+  return (pos.lon = ceiling((value - lon.min) / discrete.distance.deg))
+}
+
+posToCell = function(lat, lon){
+  pos.lat = ceiling((lat - lat.min) / discrete.distance.deg)
+  pos.lon = ceiling((lon - lon.min) / discrete.distance.deg)
+  
+  cell = pos.lat * (cell.total.lon) + pos.lon
+  return(cell)
+}
+
+cellToPos = function(cell){
+  cell.x = cell %% cell.total.lon
+  cell.y = cell / cell.total.lon
+  
+  lon = lon.min + (cell.x * discrete.distance.deg)
+  lat = lat.min + (cell.y * discrete.distance.deg)
+  
+  return(c(lat, lon))
+}
+```
+
+### Ler CSV original
+```{r}
+train.base <- read.csv('train.csv', header = T, quote = ',')
+```
+
+## Tratamento dos dados
+### Filtra dados que estão dentro dos limites geograficos
+```{r}
+train.base %>% 
+  filter(between(pickup_latitude, lat.min, lat.max)) %>% 
+  filter(between(pickup_longitude, lon.min, lon.max)) %>% 
+  filter(between(dropoff_latitude, lat.min, lat.max)) %>% 
+  filter(between(dropoff_longitude, lon.min, lon.max)) -> train
+```
+
+### Adicionar distancias
+```{r}
+train %>% 
+  mutate(dist.deg.x = abs(dropoff_longitude - pickup_longitude)) %>% 
+  mutate(dist.deg.y = abs(dropoff_latitude - pickup_latitude)) %>% 
+  mutate(dist.deg.euc = sqrt(dist.deg.x**2 + dist.deg.y**2)) %>% 
+  mutate(dist.deg.man = dist.deg.x + dist.deg.y) %>% 
+  mutate(dist.euc = (dist.deg.euc / 360) * earth.perimeter.km) %>% 
+  mutate(dist.man = (dist.deg.man / 360) * earth.perimeter.km) %>% 
+  mutate(dist.deg.x = NULL, dist.deg.y = NULL, dist.deg.euc = NULL, dist.deg.man = NULL) -> train
+```
+
+### Adicionar posições discretizadas
+```{r}
+train %>% 
+  mutate(pickup.cell = posToCell(pickup_latitude, pickup_longitude)) %>% 
+  mutate(pickup.cell.x = posToCell2(pickup_longitude, FALSE)) %>% 
+  mutate(pickup.cell.y = posToCell2(pickup_latitude, TRUE)) %>% 
+  mutate(dropoff.cell = posToCell(dropoff_latitude, dropoff_longitude)) %>% 
+  mutate(dropoff.cell.x = posToCell2(dropoff_longitude, FALSE)) %>% 
+  mutate(dropoff.cell.y = posToCell2(dropoff_latitude, TRUE))  -> train
+```
+
+### Adicionar horarios e datas
+```{r}
+train %>% 
+  mutate(pickup.date.month = format.Date(pickup_datetime, "%m")) %>% 
+  mutate(pickup.date.dow = weekdays(as.Date(pickup_datetime))) %>% 
+  mutate(pickup.date.day = format.Date(pickup_datetime, '%d')) %>% 
+  mutate(pickup.date.hour = format.Date(pickup_datetime, '%H')) %>% 
+  mutate(pickup.date.minute = format.Date(pickup_datetime, '%M')) %>% 
+  mutate(pickup.date.quart = as.numeric(pickup.date.hour) * 4 + as.numeric(pickup.date.minute) %% 15) %>% 
+  
+  mutate(dropoff.date.month = format.Date(dropoff_datetime, "%m")) %>% 
+  mutate(dropoff.date.dow = weekdays(as.Date(dropoff_datetime))) %>% 
+  mutate(dropoff.date.day = format.Date(dropoff_datetime, '%d')) %>% 
+  mutate(dropoff.date.hour = format.Date(dropoff_datetime, '%H')) %>% 
+  mutate(dropoff.date.minute = format.Date(dropoff_datetime, '%M')) %>% 
+  mutate(dropoff.date.quart = as.numeric(dropoff.date.hour) * 4 + as.numeric(dropoff.date.minute) %% 15) -> train  
+```
+
+
+## Algumas analises:
+### Velocidade e tempo de corrida médios durante o dia:
+```{r}
+train %>% 
+  group_by(pickup.date.hour) %>% 
+  summarise(duration = mean(trip_duration / 60)) %>% 
+  arrange(pickup.date.hour) %>%
+  ggplot(., aes(x=pickup.date.hour, y = duration)) +
+    geom_bar(stat = 'identity', fill = "#FF6666") +
+    coord_cartesian(ylim=c(10, 20)) +
+    xlab("Hora do dia") +
+    ylab("Tempo (min)") +
+    theme(
+      plot.title = element_text(size=16, hjust = 0.5),
+      axis.title=element_text(size=14,face="bold")
+    ) + ggtitle("Duração média")
+
+train %>% 
+  group_by(pickup.date.hour) %>% 
+  summarise(vel = mean(dist.euc / trip_duration) * 3600) %>% 
+  arrange(desc(vel)) %>% 
+  ggplot(., aes(x=pickup.date.hour, y = vel)) +
+    geom_bar(stat = 'identity', fill = "#6666FF") +
+    coord_cartesian(ylim=c(10, 30)) +
+    xlab("Hora do dia") +
+    ylab("Velocidade (km/h)") +
+    theme(
+        plot.title = element_text(size=16, hjust = 0.5),
+        axis.title=element_text(size=14,face="bold")
+      ) + ggtitle("Velocidade média")
+
+# Pelo tempo médio, pode parecer que corridas da madrugada são mais rápidas
+# Mas na verdade, durante a madrugada há menos transito, possibilitando uma maior velocidade, que causa menor tempo de corrida
+```
+
+### Corridas por mes
+```{r}
+ggplot(train, aes(x=pickup.date.month)) +
+  geom_histogram(stat='count', fill = '#66FF66') +
+  coord_cartesian(ylim=c(2e5, 2.7e5)) +
+  xlab("Mês") +
+  ylab("Quantidade de corridas") +
+  theme(
+      plot.title = element_text(size=16, hjust = 0.5),
+      axis.title=element_text(size=14,face="bold")
+    ) + ggtitle("Corridas por mês")
+
+# Existe um ponto minimo de corridas durante o mes de Janeiro, possivelmente por ser ferias e pelo fato de ser inverno em NY
+# No dataset nao tinhamos dados dos meses entre Julho a Dezembro
+```
+
+
+## Graficos
+### Plot do local das corridas na cidade
+```{r}
+pp <- readPNG("heatmap.png")
+plot.new()
+rasterImage(pp, 0, 0, 1, 1)
+# Pelo imagem com todos os pontos, é possivel ver que a maioria das corridas acontecem na ilha de Manhattan, 
+# no aeroporto Jofh F Kenedy, e no caminho entre eles. Também é possível ver um pequeno pico no Newark Liberty Airport
+
+train.subset.random <- train[sample(1:nrow(train), 100000, replace=FALSE),]
+
+ny_map <- get_map(location = "new york", maptype = "roadmap", zoom = 10)
+
+ggmap(ny_map, extent = "device") +
+  geom_point(aes(x=pickup_longitude, y=pickup_latitude), colour="red", alpha=0.1, size=1, data=train.subset.random)
+# Vendo um subset com aprox 10% dos pontos, podemos ver que a maioria se encontra mesmo em Manhattan e no caminho para
+# o aeroporto JFK
+```
+
+
+
+
